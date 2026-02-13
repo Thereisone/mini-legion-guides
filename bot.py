@@ -57,13 +57,13 @@ async def on_ready():
 @bot.command(name='ask', help='Ask a question about Mini Legion (e.g., !ask How do I farm Incense Silk?)')
 async def ask_question(ctx, *, question):
     """Answer questions using the guides and AI."""
+    global GUIDES_CONTENT
     
     # Send typing indicator
     async with ctx.typing():
         try:
             # Reload guides if empty
             if not GUIDES_CONTENT:
-                global GUIDES_CONTENT
                 GUIDES_CONTENT = load_guides()
             
             if not GUIDES_CONTENT:
