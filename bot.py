@@ -103,14 +103,14 @@ Instructions:
 
 Answer:"""
 
-            # Call Hugging Face API (using Mistral-7B)
+            # Call Hugging Face API using a free, reliable model
+            # Using microsoft/Phi-3-mini which is fast and works well
             response = hf_client.text_generation(
                 prompt,
-                model="mistralai/Mistral-7B-Instruct-v0.2",
-                max_new_tokens=300,
+                model="microsoft/Phi-3-mini-4k-instruct",
+                max_new_tokens=250,
                 temperature=0.7,
-                top_p=0.95,
-                repetition_penalty=1.1
+                do_sample=True
             )
             
             # Clean up response
