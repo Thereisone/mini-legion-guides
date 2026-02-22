@@ -1,6 +1,12 @@
 """
-Mini Legion Guide Bot
+Mini Legion Guide Bot - IMPROVED VERSION
 A Discord bot that answers questions using your game guides and GroqCloud AI.
+
+KEY IMPROVEMENTS:
+- Fixed !ask command to actually find relevant content
+- Better search algorithm for context extraction
+- Improved error handling
+- More debug logging
 """
 
 import os
@@ -9,6 +15,7 @@ from discord.ext import commands
 import requests
 import json
 import traceback
+import re
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
@@ -20,7 +27,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Load guides from GitHub
+# Global variable to store guides
+GUIDES_CONTENT = ""
+
 def load_guides():
     """Fetch the latest guides from GitHub."""
     try:
@@ -34,8 +43,81 @@ def load_guides():
         print(f"Error loading guides: {e}")
         return None
 
-# Global variable to store guides
-GUIDES_CONTENT = ""
+def extract_keywords(text):
+    """Extract meaningful keywords from text, filtering out common words."""
+    # Common words to ignore
+    stop_words = {'how', 'do', 'i', 'the', 'a', 'an', 'is', 'are', 'what', 'where', 
+                  'when', 'why', 'who', 'which', 'can', 'should', 'to', 'for', 'of',
+                  'in', 'on', 'at', 'from', 'by', 'with', 'get', 'my', 'me', 'you'}
+    
+    # Split and filter
+    words = text.lower().split()
+    keywords = [w for w in words if w not in stop_words and len(w) > 2]
+    
+    return keywords
+
+def find_relevant_sections(guides, question, max_sections=3):
+    """
+    Find the most relevant sections from guides based on the question.
+    Uses better search logic than the original.
+    """
+    # Extract meaningful keywords
+    keywords = extract_keywords(question)
+    
+    print(f"DEBUG: Searching for keywords: {keywords}")
+    
+    if not keywords:
+        # Fallback if no keywords
+        return [guides[:3000]]
+    
+    # Split into paragraphs (better than sections)
+    paragraphs = [p.strip() for p in guides.split('\n\n') if p.strip()]
+    
+    # Score each paragraph
+    scored_paragraphs = []
+    for para in paragraphs:
+        para_lower = para.lower()
+        
+        # Count keyword matches
+        score = sum(1 for keyword in keywords if keyword in para_lower)
+        
+        # Bonus points for exact phrase match
+        if question.lower() in para_lower:
+            score += 10
+        
+        # Bonus for having multiple keywords together
+        if score >= 2:
+            score += 2
+        
+        if score > 0:
+            scored_paragraphs.append((score, para))
+    
+    # Sort by score (highest first)
+    scored_paragraphs.sort(reverse=True, key=lambda x: x[0])
+    
+    # Take top N paragraphs
+    relevant = [para for score, para in scored_paragraphs[:max_sections]]
+    
+    print(f"DEBUG: Found {len(relevant)} relevant paragraphs")
+    if scored_paragraphs:
+        print(f"DEBUG: Top score was {scored_paragraphs[0][0]}")
+    
+    # If no good matches, do a broader search
+    if not relevant or (scored_paragraphs and scored_paragraphs[0][0] < 2):
+        print("DEBUG: No strong matches, using broader search...")
+        # Try searching for ANY keyword
+        for para in paragraphs:
+            if any(keyword in para.lower() for keyword in keywords):
+                relevant.append(para)
+                if len(relevant) >= max_sections:
+                    break
+    
+    # Last resort: return beginning of guide
+    if not relevant:
+        print("DEBUG: No matches found, using guide beginning")
+        return [guides[:3000]]
+    
+    return relevant
 
 def call_groq_api(prompt):
     """Call GroqCloud API for AI response."""
@@ -51,15 +133,15 @@ def call_groq_api(prompt):
         "messages": [
             {
                 "role": "system",
-                "content": "You are a helpful Mini Legion game guide assistant. Answer questions based only on the game guides provided. Be concise (2-4 sentences) and friendly. If you don't have information in the guides, say so."
+                "content": "You are a helpful Mini Legion game guide assistant. Answer questions based ONLY on the game guides provided. Be concise (2-4 sentences max) and friendly. If you don't have enough information in the guides to answer properly, say so and suggest what you DO know that might be related."
             },
             {
                 "role": "user",
                 "content": prompt
             }
         ],
-        "temperature": 0.7,
-        "max_tokens": 300
+        "temperature": 0.5,  # Lower = more focused
+        "max_tokens": 350
     }
     
     try:
@@ -92,10 +174,10 @@ async def on_ready():
 
 @bot.command(name='ask', help='Ask a question about Mini Legion (e.g., !ask How do I farm Incense Silk?)')
 async def ask_question(ctx, *, question):
-    """Answer questions using the guides and AI."""
+    """Answer questions using the guides and AI - IMPROVED VERSION."""
     global GUIDES_CONTENT
     
-    print(f"DEBUG: Received question from {ctx.author}: {question}")
+    print(f"DEBUG: Question from {ctx.author}: {question}")
     
     # Send typing indicator
     async with ctx.typing():
@@ -109,37 +191,27 @@ async def ask_question(ctx, *, question):
                 await ctx.send("❌ Sorry, I couldn't load the guides. Please contact the bot admin.")
                 return
             
-            # Search for relevant sections in guides
-            question_lower = question.lower()
-            relevant_sections = []
+            # Use improved search function
+            relevant_sections = find_relevant_sections(GUIDES_CONTENT, question, max_sections=3)
             
-            # Split guides into sections
-            sections = GUIDES_CONTENT.split('\n## ')
-            for section in sections:
-                if any(keyword in section.lower() for keyword in question_lower.split()):
-                    # Take first 2000 chars of relevant section
-                    relevant_sections.append(section[:2000])
-                    if len(relevant_sections) >= 3:  # Max 3 sections
-                        break
-            
-            # Prepare context for AI
-            context = "\n\n".join(relevant_sections) if relevant_sections else GUIDES_CONTENT[:3000]
+            # Prepare context for AI (limit total context)
+            context = "\n\n".join(relevant_sections)[:4500]  # Leave room for prompt
             print(f"DEBUG: Context length: {len(context)} characters")
             
             # Create prompt for GroqCloud
             prompt = f"""Game Guides Context:
 {context}
 
-Question: {question}
+User Question: {question}
 
-Answer based ONLY on the information in the guides above. Be concise but helpful (2-4 sentences). If the guides don't contain the answer, say "I don't have information about that in the current guides"."""
+Instructions: Answer the user's question based ONLY on the information provided above from the Mini Legion game guides. Be helpful and specific. If the guides contain the answer, provide it clearly in 2-4 sentences. If you need to reference specific items, strategies, or locations, mention them. If the guides don't have enough information, be honest but offer what related information you do have."""
 
             print("DEBUG: Calling GroqCloud API...")
             
             # Call GroqCloud API
             answer = call_groq_api(prompt)
             
-            print(f"DEBUG: AI Response received: {answer[:100]}...")
+            print(f"DEBUG: AI Response: {answer[:150]}...")
             
             # If response is too long, truncate
             if len(answer) > 1900:
@@ -187,13 +259,13 @@ async def search_guides(ctx, *, search_term):
         search_lower = search_term.lower()
         for i, line in enumerate(lines):
             if search_lower in line.lower() and line.strip():
-                # Get context (line before and after)
-                context_start = max(0, i - 1)
-                context_end = min(len(lines), i + 2)
+                # Get context (2 lines before and after)
+                context_start = max(0, i - 2)
+                context_end = min(len(lines), i + 3)
                 match = '\n'.join(lines[context_start:context_end])
                 matches.append(match)
                 
-                if len(matches) >= 3:  # Limit to 3 matches
+                if len(matches) >= 5:  # Increased to 5 matches
                     break
         
         if matches:
@@ -229,7 +301,12 @@ async def help_guide(ctx):
 **Tips:**
 - Be specific with your questions
 - The bot uses AI to understand your questions
+- Try `!search` for direct text lookup
 - Updates automatically when guides are updated on GitHub
+
+**How it works:**
+- `!search` finds exact text matches (fast, precise)
+- `!ask` uses AI to understand and answer your question (smart, contextual)
     """
     
     embed = discord.Embed(
@@ -249,16 +326,21 @@ async def on_command_error(ctx, error):
     else:
         print(f"Error: {error}")
         traceback.print_exc()
-        await ctx.send("❌ An error occurred. Please try again.")
+        # Don't send error to user for every error type
+        if not isinstance(error, commands.CommandNotFound):
+            await ctx.send("❌ An error occurred. Please try again.")
 
 # Run the bot
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         print("ERROR: DISCORD_TOKEN environment variable not set!")
+        print("Set it with: export DISCORD_TOKEN='your_token_here'")
         exit(1)
     if not GROQ_API_KEY:
         print("ERROR: GROQ_API_KEY environment variable not set!")
+        print("Set it with: export GROQ_API_KEY='your_groq_key_here'")
         exit(1)
     
-    print("Starting Mini Legion Guide Bot...")
+    print("Starting Mini Legion Guide Bot (Improved Version)...")
+    print("=" * 50)
     bot.run(DISCORD_TOKEN)
