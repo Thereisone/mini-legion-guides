@@ -1,6 +1,6 @@
 """
 Mini Legion Guide Bot - IMPROVED VERSION
-A Discord bot that answers questions using your game guides and Hugging Face AI.
+A Discord bot that answers questions using your game guides and GroqCloud AI.
 
 KEY IMPROVEMENTS:
 - Fixed !ask command to actually find relevant content  
@@ -13,16 +13,13 @@ import os
 import discord
 from discord.ext import commands
 import requests
-from huggingface_hub import InferenceClient
+import json
 import traceback
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-HF_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GITHUB_RAW_URL = os.getenv('GITHUB_GUIDES_URL', 'https://raw.githubusercontent.com/YOUR_USERNAME/mini-legion-guides/main/Mini_Legion_Guides_Cleaned.md')
-
-# Initialize Hugging Face client
-hf_client = InferenceClient(token=HF_TOKEN)
 
 # Initialize Discord bot
 intents = discord.Intents.default()
@@ -121,6 +118,44 @@ def find_relevant_sections(guides, question, max_sections=3):
     
     return relevant
 
+def call_groq_api(prompt):
+    """Call GroqCloud API for AI response."""
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "model": "llama-3.1-8b-instant",  # Fast, free model
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a helpful Mini Legion game guide assistant. Answer questions based ONLY on the game guides provided. Be concise (2-4 sentences max) and friendly. If you don't have enough information in the guides to answer properly, say so and suggest what you DO know that might be related."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.5,  # Lower = more focused
+        "max_tokens": 350
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        return result['choices'][0]['message']['content'].strip()
+    
+    except requests.exceptions.RequestException as e:
+        print(f"GroqCloud API Error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Response content: {e.response.text}")
+        raise
+
 @bot.event
 async def on_ready():
     """Called when bot successfully connects to Discord."""
@@ -162,38 +197,20 @@ async def ask_question(ctx, *, question):
             context = "\n\n".join(relevant_sections)[:4500]  # Leave room for prompt
             print(f"DEBUG: Context length: {len(context)} characters")
             
-            # Create prompt for Hugging Face
-            prompt = f"""You are a helpful Mini Legion game guide assistant. Answer the question based on the game guides provided.
-
-Game Guides Context:
+            # Create prompt for GroqCloud
+            prompt = f"""Game Guides Context:
 {context}
 
-Question: {question}
+User Question: {question}
 
-Instructions:
-- Answer based ONLY on the information in the guides above
-- Be concise but helpful (2-4 sentences)
-- If the guides don't contain the answer, say "I don't have information about that in the current guides" 
-- Format your answer in a friendly, Discord-appropriate way
-- Don't mention the guides or context in your answer
+Instructions: Answer the user's question based ONLY on the information provided above from the Mini Legion game guides. Be helpful and specific. If the guides contain the answer, provide it clearly in 2-4 sentences. If you need to reference specific items, strategies, or locations, mention them. If the guides don't have enough information, be honest but offer what related information you do have."""
 
-Answer:"""
-
-            print("DEBUG: Calling Hugging Face API...")
+            print("DEBUG: Calling GroqCloud API...")
             
-            # Call Hugging Face API using a free, reliable model
-            response = hf_client.text_generation(
-                prompt,
-                model="microsoft/Phi-3-mini-4k-instruct",
-                max_new_tokens=250,
-                temperature=0.7,
-                do_sample=True
-            )
+            # Call GroqCloud API
+            answer = call_groq_api(prompt)
             
-            print(f"DEBUG: AI Response received: {response[:150]}...")
-            
-            # Clean up response
-            answer = response.strip()
+            print(f"DEBUG: AI Response: {answer[:150]}...")
             
             # If response is too long, truncate
             if len(answer) > 1900:
@@ -316,11 +333,13 @@ async def on_command_error(ctx, error):
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         print("ERROR: DISCORD_TOKEN environment variable not set!")
+        print("Set it with: export DISCORD_TOKEN='your_token_here'")
         exit(1)
-    if not HF_TOKEN:
-        print("ERROR: HUGGINGFACE_TOKEN environment variable not set!")
+    if not GROQ_API_KEY:
+        print("ERROR: GROQ_API_KEY environment variable not set!")
+        print("Set it with: export GROQ_API_KEY='your_groq_key_here'")
         exit(1)
     
-    print("Starting Mini Legion Guide Bot (Improved Version)...")
+    print("Starting Mini Legion Guide Bot (Improved Version with GroqCloud)...")
     print("=" * 50)
     bot.run(DISCORD_TOKEN)
